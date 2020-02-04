@@ -1,0 +1,2069 @@
+<div id="x12Form">
+  <h1>F<span style="font-size: 0.4em;">or</span><br/>U<span style="font-size: 0.4em;">nderstanding</span><br/>X<span style="font-size: 0.4em;">12</span></h1>
+  <p>Paste a complete 271 (X12 - 5010-version) into the field below:</p>
+  <textarea aria-label="X12 from 271 5010" id="x12" rows="30" cols="125"></textarea>
+  <br/><br/>
+  <button onclick="parseX12()">Parse</button>
+</div>
+<div id="rerunLink" style="display:none;">
+  <p>The nested result has been output to the console in the Developer Tools.  Or you can cut-and-paste the JSON below into your favorite JSON formatter.</p>
+  <textarea aria-label="X12 to Json" id="x12ToJsonTextArea" rows="30" cols="125"></textarea>
+  <br/><br/>
+  <a href="x12.html">Parse new X12</a>
+  <br/>
+  <br/>
+  <div id="x12Output" style="font-size:11px; font-family:system-ui, sans-serif;"></div>
+</div>
+<script>
+  let emptyElements = {};
+  let parsedX12 = {};
+  let rawX12 = null;
+  let repetitionSeparator = null;
+  
+  function parseX12() {
+    toggleVisualElements();
+    let noErrors = true;
+    structure.forEach(standard => {
+      if (!noErrors) { return false; }
+      noErrors = parseSegment(standard, parsedX12, rawX12.split('~'));
+    });
+    if (!noErrors) { return false; }
+    console.log(parsedX12);
+    document.getElementById('x12ToJsonTextArea').value = JSON.stringify(parsedX12);
+    createHTMLLayer(parsedX12, document.getElementById('x12Output'), 0);
+  }
+  
+  function createHTMLLayer(x12, parentDiv, level) {
+    const nextLevel = level + 1;
+    if (typeof x12 === 'object' && !Array.isArray(x12)) {
+      Object.keys(x12).forEach((node, index) => {
+        let nodeDiv = document.createElement('div');
+        nodeDiv.id = 'level_' + level + '_' + index;
+        nodeDiv.style.marginTop = '2px';
+        nodeDiv.style.marginBottom = '2px';
+        if (level > 0) {
+          nodeDiv.style.marginLeft = '20px';
+        }
+        let innerHTML = '<b>' + node + '</b>';
+        if (typeof x12[node] === 'string') {
+          innerHTML = '<span style="color:blue;">' + node + '</span>: <b style="color:red;">' + x12[node] + '</b>';
+        }
+        nodeDiv.innerHTML = innerHTML;
+        createHTMLLayer(x12[node], nodeDiv, nextLevel);
+        parentDiv.appendChild(nodeDiv);
+      });
+    } else if (Array.isArray(x12)) {
+      x12.forEach(node => {
+        let nodeDiv = document.createElement('div');
+        nodeDiv.style.marginTop = '2px';
+        nodeDiv.style.marginBottom = '2px';
+        nodeDiv.style.marginLeft = '20px';
+        nodeDiv.innerHTML = '<b style="color:red;">' + node + '</b>';
+        parentDiv.appendChild(nodeDiv);
+      });
+    }
+  }
+  
+  function parseElement(standard, element, parent) {
+    if (standard.required === null) { return true; }
+    emptyElements[standard.id] = !element;
+    if (element) {
+      let elementName = standard.id + '_' + standard.name
+      .split(' ').join('')
+      .split('/').join('')
+      .split(',').join('')
+      .split("'").join('')
+      .split('-').join('')
+      .split('&').join('');
+      if (elementName === 'ISA11_RepetitionSeparator') { repetitionSeparator = element; }
+      let values = [element];
+      let formattedValues = [];
+      if (elementName !== 'ISA11_RepetitionSeparator') { values = element.split(repetitionSeparator); }
+      if (standard.validate) {
+        values.forEach(value => {
+          if (!Object.keys(standard.validate).some(key => key === value)) {
+            console.error(`Invalid ${standard.id} ${standard.name} element: ${value}`);
+            return false;
+          }
+          formattedValues.push(`${value} [${standard.validate[value]}]`);
+        });
+      }
+      if (formattedValues.length > 1) {
+        parent[elementName] = formattedValues;
+      } else if (formattedValues.length === 1) {
+        parent[elementName] = formattedValues[0];
+      } else {
+        parent[elementName] = element;
+      }
+    } else if (standard.required) {
+      const keyParts = standard.id.split('_');
+      const baseElementKey = keyParts[0];
+      if (keyParts.length === 1 || !emptyElements.hasOwnProperty(baseElementKey) || !emptyElements[baseElementKey]) {
+        console.error(`Missing ${standard.id} ${standard.name} element`);
+        return false;
+      }
+      return true;
+    }
+    return true;
+  }
+  
+  function parseSegment(standard, parent, x12Array) {
+    let oneHasBeenFound = false;
+    if (!standard.required) { oneHasBeenFound = true; }
+    let repeatPrefix = '';
+    let repetitionsFound = 0;
+    let continueLooping = true;
+    while (continueLooping) {
+      let elements = x12Array[0].split('*');
+      if (!oneHasBeenFound && standard.required && elements[0] !== standard.id) {
+        console.error(`Missing ${standard.id} ${standard.name} segment`);
+        return false;
+      }
+      if (elements[0] === standard.id && standard.required !== null) {
+        oneHasBeenFound = true;
+        repetitionsFound++;
+        if (standard.repeats > 1 && repetitionsFound >= standard.repeats) {
+          continueLooping = false;
+        } else {
+          x12Array.shift();
+          if (standard.repeats !== 1) {
+            if (repetitionsFound < 10) {
+              repeatPrefix = '_00' + repetitionsFound.toString();
+            } else if (repetitionsFound < 100) {
+              repeatPrefix = '_0' + repetitionsFound.toString();
+            } else {
+              repeatPrefix = '_' + repetitionsFound.toString();
+            }
+          }
+          let segmentName = standard.id + '_' + standard.name
+          .split(' ').join('')
+          .split('/').join('')
+          .split(',').join('')
+          .split("'").join('')
+          .split('-').join('')
+          .split('&').join('') + repeatPrefix;
+          parent[segmentName] = {};
+          let noErrors = true;
+          standard.elements.forEach((element, index) => {
+            if (!noErrors) { return false; }
+            noErrors = parseElement(element, elements[index + 1], parent[segmentName]);
+          });
+          if (!noErrors) { return false; }
+          noErrors = true;
+          if (standard.hasOwnProperty('segments')) {
+            standard.segments.forEach(segmentStandard => {
+              if (!noErrors) { return false; }
+              noErrors = parseSegment(segmentStandard, parent[segmentName], x12Array);
+            });
+          }
+          if (!noErrors) { return false; }
+        }
+      } else { continueLooping = false; }
+    }
+    return true;
+  }
+  
+  function toggleVisualElements() {
+    let formDiv = document.getElementById('x12Form');
+    let rerunLinkDiv = document.getElementById('rerunLink');
+    let textArea = document.getElementById('x12');
+    rawX12 = textArea.value.replace(/\r?\n|\r/g, '');
+    textArea.value = '';
+    formDiv.style.display = 'none';
+    rerunLinkDiv.style.display = 'inherit';
+  }
+  
+  const acknowledgmentRequestedCodes = {
+    '0' : 'No Interchange Acknowledgment Requested',
+    '1' : 'Interchange Acknowledgment Requested (TA1)',
+  };
+  const authorizationInformationQualifiers = {
+    '00' : 'No Authorization Information Present (No Meaningful Information in I02)',
+    '03' : 'Additional Data Identification',
+  };
+  const codeCategories = {
+    '44' : 'Nature of Injury',
+  };
+  const codeListQualifierCodes = {
+    'ABF' : 'International Classification of Diseases Clinical Modification (ICD-10-CM) Diagnosis',
+    'ABK' : 'International Classification of Diseases Clinical Modification (ICD-10-CM) Principal Diagnosis',
+    'BF' : 'International Classification of Diseases Clinical Modification (ICD-9-CM) Diagnosis',
+    'BK' : 'International Classification of Diseases Clinical Modification (ICD-9-CM) Principal Diagnosis',
+    'GR' : 'National Council on Compensation Insurance (NCCI) Nature of Injury',
+    'NI' : 'Nature of Injury',
+    'ZZ' : 'Mutually Defined',
+  };
+  const communicationNumberQualifier = {
+    'ED' : 'Electronic Data Interchange Access Number',
+    'EM' : 'Electronic Mail',
+    'EX' : 'Telephone Extension',
+    'FX' : 'Facsimile',
+    'TE' : 'Telephone',
+    'UR' : 'Uniform Resource Locator (URL)',
+    'WP' : 'Work Phone Number',
+  };
+  const contactFunctionCodes = {
+    'IC' : 'Information Contact',
+  };
+  const coverageLevelCodes = {
+    'CHD' : 'Children Only',
+    'DEP' : 'Dependents Only',
+    'ECH' : 'Employee and Children',
+    'EMP' : 'Employee Only',
+    'ESP' : 'Employee and Spouse',
+    'FAM' : 'Family',
+    'IND' : 'Individual',
+    'SPC' : 'Spouse and Children',
+    'SPO' : 'Spouse Only',
+  };
+  const dateTimePeriodFormatQualifiers = {
+    'D8' : 'Date Expressed in Format CCYYMMDD',
+    'RD8' : 'Range of Dates Expressed in Format CCYYMMDD-CCYYMMDD',
+  };
+  const dateTimeQualifiers = {
+    '096' : 'Discharge',
+    '102' : 'Issue',
+    '152' : 'Effective Date of Change',
+    '193' : 'Period Start',
+    '194' : 'Period End',
+    '198' : 'Completion',
+    '290' : 'Coordination of Benefits',
+    '291' : 'Plan',
+    '292' : 'Benefit',
+    '295' : 'Primary Care Provider',
+    '304' : 'Latest Visit or Consultation',
+    '307' : 'Eligibility',
+    '318' : 'Added',
+    '340' : 'Consolidated Omnibus Budget Reconciliation Act (COBRA) Begin',
+    '341' : 'Consolidated Omnibus Budget Reconciliation Act (COBRA) End',
+    '342' : 'Premium Paid to Date Begin',
+    '343' : 'Premium Paid to Date End',
+    '346' : 'Plan Begin',
+    '347' : 'Plan End',
+    '348' : 'Benefit Begin',
+    '349' : 'Benefit End',
+    '356' : 'Eligibility Begin',
+    '357' : 'Eligibility End',
+    '382' : 'Enrollment',
+    '435' : 'Admission',
+    '442' : 'Date of Death',
+    '458' : 'Certification',
+    '472' : 'Service',
+    '539' : 'Policy Effective',
+    '540' : 'Policy Expiration',
+    '636' : 'Date of Last Update',
+    '771' : 'Status',
+  };
+  const eligibilityOrBenefitInformationCodes = {
+    '1' : 'Active Coverage',
+    '2' : 'Active - Full Risk Capitation',
+    '3' : 'Active - Services Capitated',
+    '4' : 'Active - Services Capitated to Primary Care Physician',
+    '5' : 'Active - Pending Investigation',
+    '6' : 'Inactive',
+    '7' : 'Inactive - Pending Eligibility Update',
+    '8' : 'Inactive - Pending Investigation',
+    'A' : 'Co-Insurance',
+    'B' : 'Co-Payment',
+    'C' : 'Deductible',
+    'CB' : 'Coverage Basis',
+    'D' : 'Benefit Description',
+    'E' : 'Exclusions',
+    'F' : 'Limitations',
+    'G' : 'Out of Pocket (Stop Loss)',
+    'H' : 'Unlimited',
+    'I' : 'Non-Covered',
+    'J' : 'Cost Containment',
+    'K' : 'Reserve',
+    'L' : 'Primary Care Provider',
+    'M' : 'Pre-existing Condition',
+    'MC' : 'Managed Care Coordinator',
+    'N' : 'Services Restricted to Following Provider',
+    'O' : 'Not Deemed a Medical Necessity',
+    'P' : 'Benefit Disclaimer',
+    'Q' : 'Second Surgical Opinion Required',
+    'R' : 'Other or Additional Payor',
+    'S' : 'Prior Year(s) History',
+    'T' : 'Card(s) Reported Lost/Stolen',
+    'U' : 'Contact Following Entity for Eligibility or Benefit Information',
+    'V' : 'Cannot Process',
+    'W' : 'Other Source of Data',
+    'X' : 'Health Care Facility',
+    'Y' : 'Spend Down',
+  };
+  const employmentStatusCodes = {
+    'AE' : 'Active Reserve',
+    'AO' : 'Active Military - Overseas',
+    'AS' : 'Academy Student',
+    'AT' : 'Presidential Appointee',
+    'AU' : 'Active Military - USA',
+    'CC' : 'Contractor',
+    'DD' : 'Dishonorably Discharged',
+    'HD' : 'Honorably Discharged',
+    'IR' : 'Inactive Reserves',
+    'LX' : 'Leave of Absence: Military',
+    'PE' : 'Plan to Enlist',
+    'RE' : 'Recommissioned',
+    'RM' : 'Retired Military - Overseas',
+    'RR' : 'Retired Without Recall',
+    'RU' : 'Retired Military - USA',
+  };
+  const entityIdentifierCodes = {
+    '03' : 'Dependent',
+    '13' : 'Contracted Service Provider',
+    '1I' : 'Preferred Provider Organization (PPO)',
+    '1P' : 'Provider',
+    '2B' : 'Third-Party Administrator',
+    '36' : 'Employer',
+    '73' : 'Other Physician',
+    '80' : 'Hospital',
+    'FA' : 'Facility',
+    'GP' : 'Gateway Provider',
+    'GW' : 'Group',
+    'I3' : 'Independent Physicians Association (IPA)',
+    'IL' : 'Insured or Subscriber',
+    'LR' : 'Legal Representative',
+    'OC' : 'Origin Carrier',
+    'P3' : 'Primary Care Provider',
+    'P4' : 'Prior Insurance Center',
+    'P5' : 'Plan Sponsor',
+    'PR' : 'Payer',
+    'PRP' : 'Primary Payer',
+    'SEP' : 'Secondary Payer',
+    'TTP' : 'Tertiary Payer',
+    'VER' : 'Party Performing Verification',
+    'VN' : 'Vendor',
+    'VY' : 'Organization Completing Configuration Change',
+    'X3' : 'Utilization Management Organization',
+    'Y2' : 'Managed Care Organization',
+  };
+  const entityRelationshipCodes = {
+    '01' : 'Parent',
+    '02' : 'Child',
+    '27' : 'Domestic Partner',
+    '41' : 'Spouse',
+    '48' : 'Employee',
+    '65' : 'Other',
+    '72' : 'Unknown',
+  };
+  const entityTypeQualifiers = {
+    '1' : 'Person',
+    '2' : 'Non-Person Entity',
+  };
+  const followUpActionCodes = {
+    'C' : 'Please Correct and Resubmit',
+    'N' : 'Resubmission Not Allowed',
+    'P' : 'Please Resubmit Original Transaction',
+    'R' : 'Resubmission Allowed',
+    'S' : 'Do Not Resubmit; Inquiry Initiated to a Third Party',
+    'W' : 'Please Wait 30 Days and Resubmit',
+    'X' : 'Please Wait 10 Days and Resubmit',
+    'Y' : 'Do Not Resubmit; We Will Hold Your Request and Respond Again Shortly',
+  };
+  const genderCodes = {
+    'F' : 'Female',
+    'M' : 'Male',
+    'U' : 'Unknown',
+  };
+  const governmentServiceAffiliationCodes = {
+    'A' : 'Air Force',
+    'B' : 'Air Force Reserves',
+    'C' : 'Army',
+    'D' : 'Army Reserves',
+    'E' : 'Coast Guard',
+    'F' : 'Marine Corps',
+    'G' : 'Marine Corps Reserves',
+    'H' : 'National Guard',
+    'I' : 'Navy',
+    'J' : 'Navy Reserves',
+    'K' : 'Other',
+    'L' : 'Peace Corp',
+    'M' : 'Regular Armed Forces',
+    'N' : 'Reserves',
+    'O' : 'U.S. Public Health Service',
+    'Q' : 'Foreign Military',
+    'R' : 'American Red Cross',
+    'S' : 'Department of Defense',
+    'U' : 'United Services Organization',
+    'W' : 'Military Sealift Command',
+  };
+  const hierarchicalChildCodes = {
+    '0' : 'No Subordinate HL Segment in This Hierarchical Structure',
+    '1' : 'Additional Subordinate HL Data Segment in This Hierarchical Structure',
+  };
+  const hierarchicalLevelCodes = {
+    '20' : 'Information Source',
+    '21' : 'Information Receiver',
+    '22' : 'Subscriber',
+    '23' : 'Dependent',
+  };
+  const hierarchicalStructureCodes = {
+    '0022' : 'Information Source, Information Receiver, Subscriber, Dependent',
+  };
+  const identificationCodeQualifiers = {
+    '24' : 'Employer\'s Identification Number',
+    '34' : 'Social Security Number',
+    '46' : 'Electronic Transmitter Identification Number (ETIN)',
+    'FA' : 'Facility Identification',
+    'FI' : 'Federal Taxpayer\'s Identification Number',
+    'II' : 'Standard Unique Health Identifier for each Individual in the United States',
+    'MI' : 'Member Identification Number',
+    'NI' : 'National Association of Insurance Commissioners (NAIC) Identification',
+    'PI' : 'Payor Identification',
+    'PP' : 'Pharmacy Process Number',
+    'SV' : 'Service Provider Number',
+    'XV' : 'Centers for Medicare and Medicaid Services PlanID',
+    'XX' : 'Centers for Medicare and Medicaid Services National Provider Identifier',
+  };
+  const individualRelationshipCodes = {
+    '01' : 'Spouse',
+    '18' : 'Self',
+    '19' : 'Child',
+    '20' : 'Employee',
+    '21' : 'Unknown',
+    '39' : 'Organ Donor',
+    '40' : 'Cadaver Donor',
+    '53' : 'Life Partner',
+    'G8' : 'Other Relationship',
+  };
+  const industryCodes = {
+    '01' : 'Pharmacy',
+    '03' : 'School',
+    '04' : 'Homeless Shelter',
+    '05' : 'Indian Health Service Free-standing Facility',
+    '06' : 'Indian Health Service Provider-based Facility',
+    '07' : 'Tribal 638 Free-standing Facility',
+    '08' : 'Tribal 638 Provider-based Facility',
+    '11' : 'Office',
+    '12' : 'Home',
+    '13' : 'Assisted Living Facility',
+    '14' : 'Group Home',
+    '15' : 'Mobile Unit',
+    '20' : 'Urgent Care Facility',
+    '21' : 'Inpatient Hospital',
+    '22' : 'Outpatient Hospital',
+    '23' : 'Emergency Room - Hospital',
+    '24' : 'Ambulatory Surgical Center',
+    '25' : 'Birthing Center',
+    '26' : 'Military Treatment Facility',
+    '31' : 'Skilled Nursing Facility',
+    '32' : 'Nursing Facility',
+    '33' : 'Custodial Care Facility',
+    '34' : 'Hospice',
+    '41' : 'Ambulance - Land',
+    '42' : 'Ambulance - Air or Water',
+    '49' : 'Independent Clinic',
+    '50' : 'Federally Qualified Health Center',
+    '51' : 'Inpatient Psychiatric Facility',
+    '52' : 'Psychiatric Facility - Partial Hospitalization',
+    '53' : 'Community Mental Health Center',
+    '54' : 'Intermediate Care Facility/Mentally Retarded',
+    '55' : 'Residential Substance Abuse Treatment Facility',
+    '56' : 'Psychiatric Residential Treatment Center',
+    '57' : 'Non-residential Substance Abuse Treatment Facility',
+    '60' : 'Mass Immunization Center',
+    '61' : 'Comprehensive Inpatient Rehabilitation Facility',
+    '62' : 'Comprehensive Outpatient Rehabilitation Facility',
+    '65' : 'End-Stage Renal Disease Treatment Facility',
+    '71' : 'State or Local Public Health Clinic',
+    '72' : 'Rural Health Clinic',
+    '81' : 'Independent Laboratory',
+    '99' : 'Other Place of Service',
+  };
+  const informationStatusCodes = {
+    'A' : 'Partial',
+    'C' : 'Current',
+    'L' : 'Latest',
+    'O' : 'Oldest',
+    'P' : 'Prior',
+    'S' : 'Second Most Current',
+    'T' : 'Third Most Current',
+  };
+  const insuranceTypeCodes = {
+    '12' : 'Medicare Secondary Working Aged Beneficiary or Spouse with Employer Group Health Plan',
+    '13' : 'Medicare Secondary End-Stage Renal Disease Beneficiary in the Mandated Coordination Period with an Employer\'s Group Health Plan',
+    '14' : 'Medicare Secondary, No-fault Insurance including Auto is Primary',
+    '15' : 'Medicare Secondary Worker\'s Compensation',
+    '16' : 'Medicare Secondary Public Health Service (PHS) or Other Federal Agency',
+    '41' : 'Medicare Secondary Black Lung',
+    '42' : 'Medicare Secondary Veteran\'s Administration',
+    '43' : 'Medicare Secondary Disabled Beneficiary Under Age 65 with Large Group Health Plan (LGHP)',
+    '47' : 'Medicare Secondary, Other Liability Insurance is Primary',
+    'AP' : 'Auto Insurance Policy',
+    'C1' : 'Commercial',
+    'CO' : 'Consolidated Omnibus Budget Reconciliation Act (COBRA)',
+    'CP' : 'Medicare Conditionally Primary',
+    'D' : 'Disability',
+    'DB' : 'Disability Benefits',
+    'EP' : 'Exclusive Provider Organization',
+    'FF' : 'Family or Friends',
+    'GP' : 'Group Policy',
+    'HM' : 'Health Maintenance Organization (HMO)',
+    'HN' : 'Health Maintenance Organization (HMO) - Medicare Risk',
+    'HS' : 'Special Low Income Medicare Beneficiary',
+    'IN' : 'Indemnity',
+    'IP' : 'Individual Policy',
+    'LC' : 'Long Term Care',
+    'LD' : 'Long Term Policy',
+    'LI' : 'Life Insurance',
+    'LT' : 'Litigation',
+    'MA' : 'Medicare Part A',
+    'MB' : 'Medicare Part B',
+    'MC' : 'Medicaid',
+    'MH' : 'Medigap Part A',
+    'MI' : 'Medigap Part B',
+    'MP' : 'Medicare Primary',
+    'OT' : 'Other',
+    'PE' : 'Property Insurance - Personal',
+    'PL' : 'Personal',
+    'PP' : 'Personal Payment (Cash - No Insurance)',
+    'PR' : 'Preferred Provider Organization (PPO)',
+    'PS' : 'Point of Service',
+    'QM' : 'Qualified Medicare Beneficiary',
+    'RP' : 'Property Insurance - Real',
+    'SP' : 'Supplemental Policy',
+    'TF' : 'Tax Equity Fiscal Responsibility Act (TEFRA)',
+    'WC' : 'Workers Compensation',
+    'WU' : 'Wrap Up Policy',
+  };
+  const interchangeControlVersionNumbers = {
+    '00501' : 'Standards Approved for Publication by ASC X12 Procedures Review Board through 2003',
+  };
+  const interchangeIdQualifiers = {
+    '01' : 'Duns (Dun & Bradstreet)',
+    '14' : 'Duns Plus Suffix',
+    '20' : 'Health Industry Number (HIN)',
+    '27' : 'Carrier Identification Number as assigned by Health Care Financing Administration (HCFA)',
+    '28' : 'Fiscal Intermediary Identification Number as assigned by Health Care Financing Administration (HCFA)',
+    '29' : 'Medicare Provider and Supplier Identification Number as assigned by Health Care Financing Administration (HCFA)',
+    '30' : 'U.S. Federal Tax Identification Number',
+    '33' : 'National Association of Insurance Commissioners Company Code (NAIC)',
+    'ZZ' : 'Mutually Defined',
+  };
+  const locationQualifiers = {
+    'RJ' : 'Region',
+  };
+  const maintenanceReasonCodes = {
+    '25' : 'Change in Identifying Data Elements',
+  };
+  const maintenanceTypeCodes = {
+    '001' : 'Change',
+  };
+  const militaryServiceRankCodes = {
+    'A1' : 'Admiral',
+    'A2' : 'Airman',
+    'A3' : 'Airman First Class',
+    'B1' : 'Basic Airman',
+    'B2' : 'Brigadier General',
+    'C1' : 'Captain',
+    'C2' : 'Chief Master Sergeant',
+    'C3' : 'Chief Petty Officer',
+    'C4' : 'Chief Warrant',
+    'C5' : 'Colonel',
+    'C6' : 'Commander',
+    'C7' : 'Commmodore',
+    'C8' : 'Corporal',
+    'C9' : 'Corporal Specialist 4',
+    'E1' : 'Ensign',
+    'F1' : 'First Lieutenant',
+    'F2' : 'First Sergeant',
+    'F3' : 'First Sergeant-Master Sergeant',
+    'F4' : 'Fleet Admiral',
+    'G1' : 'General',
+    'G4' : 'Gunnery Sergeant',
+    'L1' : 'Lance Corporal',
+    'L2' : 'Lieutenant',
+    'L3' : 'Lieutenant Colonel',
+    'L4' : 'Lieutenant Commander',
+    'L5' : 'Lieutenant General',
+    'L6' : 'Lieutenant Junior Grade',
+    'M1' : 'Major',
+    'M2' : 'Major General',
+    'M3' : 'Master Chief Petty Officer',
+    'M4' : 'Master Gunnery Sergeant Major',
+    'M5' : 'Master Sergeant',
+    'M6' : 'Master Sergeant Specialist 8',
+    'P1' : 'Petty Officer First Class',
+    'P2' : 'Petty Officer Second Class',
+    'P3' : 'Petty Officer Third Class',
+    'P4' : 'Private',
+    'P5' : 'Private First Class',
+    'R1' : 'Rear Admiral',
+    'R2' : 'Recruit',
+    'S1' : 'Seaman',
+    'S2' : 'Seaman Apprentice',
+    'S3' : 'Seaman Recruit',
+    'S4' : 'Second Lieutenant',
+    'S5' : 'Senior Chief Petty Officer',
+    'S6' : 'Senior Master Sergeant',
+    'S7' : 'Sergeant',
+    'S8' : 'Sergeant First Class Specialist 7',
+    'S9' : 'Sergeant Major Specialist 9',
+    'SA' : 'Sergeant Specialist 5',
+    'SB' : 'Staff Sergeant',
+    'SC' : 'Staff Sergeant Specialist 6',
+    'T1' : 'Technical Sergeant',
+    'V1' : 'Vice Admiral',
+    'W1' : 'Warrant Officer',
+  };
+  const productServiceIdQualifier = {
+    'AD' : 'American Dental Association Codes',
+    'CJ' : 'Current Procedural Terminology (CPT) Codes',
+    'HC' : 'Health Care Financing Administration Common Procedural Coding System (HCPCS) Codes',
+    'ID' : 'International Classification of Diseases, 9th Revision, Clinical Modification (ICD-9-CM) - Procedure',
+    'IV' : 'Home Infusion EDI Coalition (HIEC) Product/Service',
+    'N4' : 'National Drug Code in 5-4-2 Format',
+    'ZZ' : 'Mutually Defined',
+  };
+  const providerCodes = {
+    'AD' : 'Admitting',
+    'AT' : 'Attending',
+    'BI' : 'Billing',
+    'CO' : 'Consulting',
+    'CV' : 'Covering',
+    'H' : 'Hospital',
+    'HH' : 'Home Health Care',
+    'LA' : 'Laboratory',
+    'OT' : 'Other Physician',
+    'P1' : 'Pharmacist',
+    'P2' : 'Pharmacy',
+    'PC' : 'Primary Care Physician',
+    'PE' : 'Performing',
+    'R' : 'Rural Health Clinic',
+    'RF' : 'Referring',
+    'SB' : 'Submitting',
+    'SK' : 'Skilled Nursing Facility',
+    'SU' : 'Supervising',
+  };
+  const quantityQualifiers = {
+    '8H' : 'Minimum',
+    '99' : 'Quantity Used',
+    'CA' : 'Covered - Actual',
+    'CE' : 'Covered - Estimated',
+    'D3' : 'Number of Co-insurance Days',
+    'DB' : 'Deductible Blood Units',
+    'DY' : 'Days',
+    'HS' : 'Hours',
+    'FL' : 'Units',
+    'LA' : 'Life-time Reserve - Actual',
+    'LE' : 'Life-time Reserve - Estimated',
+    'M2' : 'Maximum',
+    'MN' : 'Month',
+    'P6' : 'Number of Services or Procedures',
+    'QA' : 'Quantity Approved',
+    'S7' : 'Age, High Value',
+    'S8' : 'Age, Low Value',
+    'VS' : 'Visits',
+    'YY' : 'Years',
+  };
+  const referenceIdentificationQualifiers = {
+    '0B' : 'State License Number',
+    '18' : 'Plan Number',
+    '1C' : 'Medicare Provider Number',
+    '1D' : 'Medicaid Provider Number',
+    '1J' : 'Facility ID Number',
+    '1L' : 'Group or Policy Number',
+    '1W' : 'Member Identification Number',
+    '3H' : 'Case Number',
+    '49' : 'Family Unit Number',
+    '4A' : 'Personal Identification Number (PIN)',
+    '6P' : 'Group Number',
+    '9F' : 'Referral Number',
+    'ALS' : 'Alternative List ID',
+    'CE' : 'Class of Contract',
+    'CLI' : 'Coverage List ID',
+    'CT' : 'Contract Number',
+    'EA' : 'Medical Record Identification Number',
+    'EJ' : 'Patient Account Number',
+    'EL' : 'Electronic device pin number',
+    'EO' : 'Submitter Identification Number',
+    'F6' : 'Health Insurance Claim (HIC) Number',
+    'FO' : 'Drug Formulary Number',
+    'G1' : 'Prior Authorization Number',
+    'GH' : 'Identification Card Serial Number',
+    'HJ' : 'Identity Card Number',
+    'HPI' : 'Centers for Medicare and Medicaid Services National Provider Identifier',
+    'IF' : 'Issue Number',
+    'IG' : 'Insurance Policy Number',
+    'JD' : 'User Identification',
+    'M7' : 'Medical Assistance Category',
+    'MRC' : 'Eligibility Category',
+    'N5' : 'Provider Plan Network Identification Number',
+    'N6' : 'Plan Network Identification Number',
+    'N7' : 'Facility Network Identification Number',
+    'NQ' : 'Medicaid Recipient Identification Number',
+    'PXC' : 'Health Care Provider Taxonomy',
+    'Q4' : 'Prior Identifier Number',
+    'SY' : 'Social Security Number',
+    'TJ' : 'Federal Taxpayer\'s Identification Number',
+    'Y4' : 'Agency Claim Number',
+  };
+  const rejectReasonCodes = {
+    '04' : 'Authorized Quantity Exceeded',
+    '15' : 'Required application data missing',
+    '33' : 'Input Errors',
+    '35' : 'Out of Network',
+    '41' : 'Authorization/Access Restrictions',
+    '42' : 'Unable to Respond at Current Time',
+    '43' : 'Invalid/Missing Provider Identification',
+    '44' : 'Invalid/Missing Provider Name',
+    '45' : 'Invalid/Missing Provider Specialty',
+    '47' : 'Invalid/Missing Provider State',
+    '48' : 'Invalid/Missing Referring Provider Identification Number',
+    '49' : 'Provider is Not Primary Care Physician',
+    '50' : 'Provider Ineligible for Inquiries',
+    '51' : 'Provider Not on File',
+    '52' : 'Service Dates Not Within Provider Plan Enrollment',
+    '53' : 'Inquired Benefit Inconsistent with Provider Type',
+    '54' : 'Inappropriate Product/Service ID Qualifier',
+    '55' : 'Inappropriate Product/Service ID',
+    '56' : 'Inappropriate Date',
+    '57' : 'Invalid/Missing Date(s) of Service',
+    '58' : 'Invalid/Missing Date-of-Birth',
+    '60' : 'Date of Birth Follows Date(s) of Service',
+    '61' : 'Date of Death Precedes Date(s) of Service',
+    '62' : 'Date of Service Not Within Allowable Inquiry Period',
+    '63' : 'Date of Service in Future',
+    '64' : 'Invalid/Missing Patient ID',
+    '65' : 'Invalid/Missing Patient Name',
+    '66' : 'Invalid/Missing Patient Gender',
+    '67' : 'Patient Not Found',
+    '68' : 'Duplicate Patient ID Number',
+    '69' : 'Inconsistent with Patient\'s Age',
+    '70' : 'Inconsistent with Patient\'s Gender',
+    '71' : 'Patient Birth Date Does Not Match That for the Patient on the Database',
+    '72' : 'Invalid/Missing Subscriber/Insured ID',
+    '73' : 'Invalid/Missing Subscriber/Insured Name',
+    '74' : 'Invalid/Missing Subscriber/Insured Gender',
+    '75' : 'Subscriber/Insured Not Found',
+    '76' : 'Duplicate Subscriber/Insured ID Number',
+    '77' : 'Subscriber Found, Patient Not Found',
+    '78' : 'Subscriber/Insured Not in Group/Plan Identified',
+    '79' : 'Invalid Participant Identification',
+    '80' : 'No Response received - Transaction Terminated',
+    '97' : 'Invalid or Missing Provider Address',
+    '98' : 'Experimental Service or Procedure',
+    'AA' : 'Authorization Number Not Found',
+    'AE' : 'Requires Primary Care Physician Authorization',
+    'AF' : 'Invalid/Missing Diagnosis Code(s)',
+    'AG' : 'Invalid/Missing Procedure Code(s)',
+    'AO' : 'Additional Patient Condition Information Required',
+    'CI' : 'Certification Information Does Not Match Patient',
+    'E8' : 'Requires Medical Review',
+    'IA' : 'Invalid Authorization Number Format',
+    'MA' : 'Missing Authorization Number',
+    'T4' : 'Payer Name or Identifier Missing',
+  };
+  const responsibleAgencyCodes = {
+    'X' : 'Accredited Standards Committee X12',
+  };
+  const securityInformationQualifiers = {
+    '00' : 'No Security Information Present (No Meaningful Information in I04)',
+    '01' : 'Password',
+  };
+  const serviceTypeCodes = {
+    '1' : 'Medical Care',
+    '2' : 'Surgical',
+    '3' : 'Consultation',
+    '4' : 'Diagnostic X-Ray',
+    '5' : 'Diagnostic Lab',
+    '6' : 'Radiation Therapy',
+    '7' : 'Anesthesia',
+    '8' : 'Surgical Assistance',
+    '9' : 'Other Medical',
+    '10' : 'Blood Charges',
+    '11' : 'Used Durable Medical Equipment',
+    '12' : 'Durable Medical Equipment Purchase',
+    '13' : 'Ambulatory Service Center Facility',
+    '14' : 'Renal Supplies in the Home',
+    '15' : 'Alternate Method Dialysis',
+    '16' : 'Chronic Renal Disease (CRD) Equipment',
+    '17' : 'Pre-Admission Testing',
+    '18' : 'Durable Medical Equipment Rental',
+    '19' : 'Pneumonia Vaccine',
+    '20' : 'Second Surgical Opinion',
+    '21' : 'Third Surgical Opinion',
+    '22' : 'Social Work',
+    '23' : 'Diagnostic Dental',
+    '24' : 'Periodontics',
+    '25' : 'Restorative',
+    '26' : 'Endodontics',
+    '27' : 'Maxillofacial Prosthetics',
+    '28' : 'Adjunctive Dental Services',
+    '30' : 'Health Benefit Plan Coverage',
+    '32' : 'Plan Waiting Period',
+    '33' : 'Chiropractic',
+    '34' : 'Chiropractic Office Visits',
+    '35' : 'Dental Care',
+    '36' : 'Dental Crowns',
+    '37' : 'Dental Accident',
+    '38' : 'Orthodontics',
+    '39' : 'Prosthodontics',
+    '40' : 'Oral Surgery',
+    '41' : 'Routine (Preventive) Dental',
+    '42' : 'Home Health Care',
+    '43' : 'Home Health Prescriptions',
+    '44' : 'Home Health Visits',
+    '45' : 'Hospice',
+    '46' : 'Respite Care',
+    '47' : 'Hospital',
+    '48' : 'Hospital - Inpatient',
+    '49' : 'Hospital - Room and Board',
+    '50' : 'Hospital - Outpatient',
+    '51' : 'Hospital - Emergency Accident',
+    '52' : 'Hospital - Emergency Medical',
+    '53' : 'Hospital - Ambulatory Surgical',
+    '54' : 'Long Term Care',
+    '55' : 'Major Medical',
+    '56' : 'Medically Related Transportation',
+    '57' : 'Air Transportation',
+    '58' : 'Cabulance',
+    '59' : 'Licensed Ambulance',
+    '60' : 'General Benefits',
+    '61' : 'In-vitro Fertilization',
+    '62' : 'MRI/CAT Scan',
+    '63' : 'Donor Procedures',
+    '64' : 'Acupuncture',
+    '65' : 'Newborn Care',
+    '66' : 'Pathology',
+    '67' : 'Smoking Cessation',
+    '68' : 'Well Baby Care',
+    '69' : 'Maternity',
+    '70' : 'Transplants',
+    '71' : 'Audiology Exam',
+    '72' : 'Inhalation Therapy',
+    '73' : 'Diagnostic Medical',
+    '74' : 'Private Duty Nursing',
+    '75' : 'Prosthetic Device',
+    '76' : 'Dialysis',
+    '77' : 'Otological Exam',
+    '78' : 'Chemotherapy',
+    '79' : 'Allergy Testing',
+    '80' : 'Immunizations',
+    '81' : 'Routine Physical',
+    '82' : 'Family Planning',
+    '83' : 'Infertility',
+    '84' : 'Abortion',
+    '85' : 'AIDS',
+    '86' : 'Emergency Services',
+    '87' : 'Cancer',
+    '88' : 'Pharmacy',
+    '89' : 'Free Standing Prescription Drug',
+    '90' : 'Mail Order Prescription Drug',
+    '91' : 'Brand Name Prescription Drug',
+    '92' : 'Generic Prescription Drug',
+    '93' : 'Podiatry',
+    '94' : 'Podiatry - Office Visits',
+    '95' : 'Podiatry - Nursing Home Visits',
+    '96' : 'Professional (Physician)',
+    '97' : 'Anesthesiologist',
+    '98' : 'Professional (Physician) Visit - Office',
+    '99' : 'Professional (Physician) Visit - Inpatient',
+    'A0' : 'Professional (Physician) Visit - Outpatient',
+    'A1' : 'Professional (Physician) Visit - Nursing Home',
+    'A2' : 'Professional (Physician) Visit - Skilled Nursing Facility',
+    'A3' : 'Professional (Physician) Visit - Home',
+    'A4' : 'Psychiatric',
+    'A5' : 'Psychiatric - Room and Board',
+    'A6' : 'Psychotherapy',
+    'A7' : 'Psychiatric - Inpatient',
+    'A8' : 'Psychiatric - Outpatient',
+    'A9' : 'Rehabilitation',
+    'AA' : 'Rehabilitation - Room and Board',
+    'AB' : 'Rehabilitation - Inpatient',
+    'AC' : 'Rehabilitation - Outpatient',
+    'AD' : 'Occupational Therapy',
+    'AE' : 'Physical Medicine',
+    'AF' : 'Speech Therapy',
+    'AG' : 'Skilled Nursing Care',
+    'AH' : 'Skilled Nursing Care - Room and Board',
+    'AI' : 'Substance Abuse',
+    'AJ' : 'Alcoholism',
+    'AK' : 'Drug Addiction',
+    'AL' : 'Vision',
+    'AM' : 'Frames',
+    'AN' : 'Routine Exam',
+    'AO' : 'Lenses',
+    'AQ' : 'Nonmedically Necessary Physical',
+    'AR' : 'Experimental Drug Therapy',
+    'B1' : 'Burn Care',
+    'B2' : 'Brand Name Prescription Drug - Formulary',
+    'B3' : 'Brand Name Prescription Drug - Non-Formulary',
+    'BA' : 'Independent Medical Evaluation',
+    'BB' : 'Partial Hospitalization (Psychiatric)',
+    'BC' : 'Day Care (Psychiatric)',
+    'BD' : 'Cognitive Therapy',
+    'BE' : 'Massage Therapy',
+    'BF' : 'Pulmonary Rehabilitation',
+    'BG' : 'Cardiac Rehabilitation',
+    'BH' : 'Pediatric',
+    'BI' : 'Nursery',
+    'BJ' : 'Skin',
+    'BK' : 'Orthopedic',
+    'BL' : 'Cardiac',
+    'BM' : 'Lymphatic',
+    'BN' : 'Gastrointestinal',
+    'BP' : 'Endocrine',
+    'BQ' : 'Neurology',
+    'BR' : 'Eye',
+    'BS' : 'Invasive Procedures',
+    'BT' : 'Gynecological',
+    'BU' : 'Obstetrical',
+    'BV' : 'Obstetrical/Gynecological',
+    'BW' : 'Mail Order Prescription Drug: Brand Name',
+    'BX' : 'Mail Order Prescription Drug: Generic',
+    'BY' : 'Physician Visit - Office: Sick',
+    'BZ' : 'Physician Visit - Office: Well',
+    'C1' : 'Coronary Care',
+    'CA' : 'Private Duty Nursing - Inpatient',
+    'CB' : 'Private Duty Nursing - Outpatient',
+    'CC' : 'Surgical Benefits - Professional (Physician)',
+    'CD' : 'Surgical Benefits - Facility',
+    'CE' : 'Mental Health Provider - Inpatient',
+    'CF' : 'Mental Health Provider - Outpatient',
+    'CG' : 'Mental Health Facility - Inpatient',
+    'CH' : 'Mental Health Facility - Outpatient',
+    'CI' : 'Substance Abuse Facility - Inpatient',
+    'CJ' : 'Substance Abuse Facility - Outpatient',
+    'CK' : 'Screening X-ray',
+    'CL' : 'Screening laboratory',
+    'CM' : 'Mammogram, High Risk Patient',
+    'CN' : 'Mammogram, Low Risk Patient',
+    'CO' : 'Flu Vaccination',
+    'CP' : 'Eyewear and Eyewear Accessories',
+    'CQ' : 'Case Management',
+    'DG' : 'Dermatology',
+    'DM' : 'Durable Medical Equipment',
+    'DS' : 'Diabetic Supplies',
+    'GF' : 'Generic Prescription Drug - Formulary',
+    'GN' : 'Generic Prescription Drug - Non-Formulary',
+    'GY' : 'Allergy',
+    'IC' : 'Intensive Care',
+    'MH' : 'Mental Health',
+    'NI' : 'Neonatal Intensive Care',
+    'ON' : 'Oncology',
+    'PT' : 'Physical Therapy',
+    'PU' : 'Pulmonary',
+    'RN' : 'Renal',
+    'RT' : 'Residential Psychiatric Treatment',
+    'TC' : 'Transitional Care',
+    'TN' : 'Transitional Nursery Care',
+    'UC' : 'Urgent Care',
+  };
+  const shipDeliveryOrCalendarPatternCodes = {
+    '1' : '1st Week of the Month',
+    '2' : '2nd Week of the Month',
+    '3' : '3rd Week of the Month',
+    '4' : '4th Week of the Month',
+    '5' : '5th Week of the Month',
+    '6' : '1st & 3rd Weeks of the Month',
+    '7' : '2nd & 4th Weeks of the Month',
+    '8' : '1st Working Day of Period',
+    '9' : 'Last Working Day of Period',
+    'A' : 'Monday through Friday',
+    'B' : 'Monday through Saturday',
+    'C' : 'Monday through Sunday',
+    'D' : 'Monday',
+    'E' : 'Tuesday',
+    'F' : 'Wednesday',
+    'G' : 'Thursday',
+    'H' : 'Friday',
+    'J' : 'Saturday',
+    'K' : 'Sunday',
+    'L' : 'Monday through Thursday',
+    'M' : 'Immediately',
+    'N' : 'As Directed',
+    'O' : 'Daily Mon. through Fri.',
+    'P' : '1/2 Mon. & 1/2 Thurs.',
+    'Q' : '1/2 Tues. & 1/2 Thurs.',
+    'R' : '1/2 Wed. & 1/2 Fri.',
+    'S' : 'Once Anytime Mon. through Fri.',
+    'SG' : 'Tuesday through Friday',
+    'SL' : 'Monday, Tuesday and Thursday',
+    'SP' : 'Monday, Tuesday and Friday',
+    'SX' : 'Wednesday and Thursday',
+    'SY' : 'Monday, Wednesday and Thursday',
+    'SZ' : 'Tuesday, Thursday and Friday',
+    'T' : '1/2 Tue. & 1/2 Fri.',
+    'U' : '1/2 Mon. & 1/2 Wed.',
+    'V' : '1/3 Mon., 1/3 Wed., 1/3 Fri.',
+    'W' : 'Whenever Necessary',
+    'X' : '1/2 By Wed., Bal. By Fri.',
+    'Y' : 'None (Also Used to Cancel or Override a Previous Pattern)',
+  };
+  const shipDeliveryPatternTimeCodes = {
+    'A' : '1st Shift (Normal Working Hours)',
+    'B' : '2nd Shift',
+    'C' : '3rd Shift',
+    'D' : 'A.M.',
+    'E' : 'P.M.',
+    'F' : 'As Directed',
+    'G' : 'Any Shift',
+    'Y' : 'None (Also Used to Cancel or Override a Previous Pattern',
+  };
+  const timePeriodQualifiers = {
+    '6' : 'Hour',
+    '7' : 'Day',
+    '13' : '24 Hours',
+    '21' : 'Years',
+    '22' : 'Service Year',
+    '23' : 'Calendar Year',
+    '24' : 'Year to Date',
+    '25' : 'Contract',
+    '26' : 'Episode',
+    '27' : 'Visit',
+    '28' : 'Outlier',
+    '29' : 'Remaining',
+    '30' : 'Exceeded',
+    '31' : 'Not Exceeded',
+    '32' : 'Lifetime',
+    '33' : 'Lifetime Remaining',
+    '34' : 'Month',
+    '35' : 'Week',
+    '36' : 'Admission',
+  };
+  const traceTypeCodes = {
+    '1' : 'Current Transaction Trace Numbers',
+    '2' : 'Referenced Transaction Trace Numbers',
+  };
+  const transactionSetIdentifierCodes = {
+    '271' : 'Eligibility, Coverage or Benefit Information',
+  };
+  const transactionSetPurposeCodes = {
+    '06' : 'Confirmation',
+    '11' : 'Response',
+  };
+  const unitOrBasisForMeasurementCodes = {
+    'DA' : 'Days',
+    'MO' : 'Months',
+    'VS' : 'Visit',
+    'WK' : 'Week',
+    'YR' : 'Years',
+  };
+  const usageIndicators = {
+    'P' : 'Production Data',
+    'T' : 'Test Data',
+  };
+  const versionReleaseIndustryIdentifierCodes = {
+    '005010X279A1' : 'Standards Approved for Publication by ASC X12 Procedures Review Board through October 2003',
+  };
+  const yesNoConditionOrResponseCodes = {
+    'N' : 'No',
+    'U' : 'Unknown',
+    'W' : 'Not Applicable',
+    'Y' : 'Yes',
+  };
+  
+  const structure = [
+    {
+      id:'ISA', name:'Interchange Control Header', repeats:1, required:true,
+      elements:[
+        {id:'ISA01', name:'Authorization Information Qualifier', required:true, validate:authorizationInformationQualifiers},
+        {id:'ISA02', name:'Authorization Info', required:true, validate:null},
+        {id:'ISA03', name:'Security Information Qualifier', required:true, validate:securityInformationQualifiers},
+        {id:'ISA04', name:'Security Info', required:true, validate:null},
+        {id:'ISA05', name:'Interchange ID Qualifier', required:true, validate:interchangeIdQualifiers},
+        {id:'ISA06', name:'Interchange Sender ID', required:true, validate:null},
+        {id:'ISA07', name:'Interchange ID Qualifier', required:true, validate:interchangeIdQualifiers},
+        {id:'ISA08', name:'Interchange Receiver ID', required:true, validate:null},
+        {id:'ISA09', name:'Interchange Date', required:true, validate:null},
+        {id:'ISA10', name:'Interchange Time', required:true, validate:null},
+        {id:'ISA11', name:'Repetition Separator', required:true, validate:null},
+        {id:'ISA12', name:'Interchange Control Version Number', required:true, validate:interchangeControlVersionNumbers},
+        {id:'ISA13', name:'Interchange Control Number', required:true, validate:null},
+        {id:'ISA14', name:'Acknowledgment Requested', required:true, validate:acknowledgmentRequestedCodes},
+        {id:'ISA15', name:'Interchange Usage', required:true, validate:usageIndicators},
+        {id:'ISA16', name:'Component Element Separator', required:true, validate:null},
+      ],
+      segments:[
+        {
+          id:'GS', name:'Functional Group Header', repeats:1, required:true,
+          elements:[
+            {id:'GS01', name:'Functional Identifier', required:true, validate:null},
+            {id:'GS02', name:'Application Sender', required:true, validate:null},
+            {id:'GS03', name:'Application Receiver', required:true, validate:null},
+            {id:'GS04', name:'Date', required:true, validate:null},
+            {id:'GS05', name:'Time', required:true, validate:null},
+            {id:'GS06', name:'Group Control Number', required:true, validate:null},
+            {id:'GS07', name:'Responsible Agency', required:true, validate:responsibleAgencyCodes},
+            {id:'GS08', name:'Version/Release/Industry', required:true, validate:versionReleaseIndustryIdentifierCodes},
+          ],
+          segments:[
+            {
+              id:'ST', name:'Transaction Set Header', repeats:1, required:true,
+              elements:[
+                {id:'ST01', name:'Transaction Set Identifier', required:true, validate:transactionSetIdentifierCodes},
+                {id:'ST02', name:'Transaction Set Control Number', required:true, validate:null},
+                {id:'ST03', name:'Implementation Convention Reference', required:true, validate:null},
+              ],
+              segments:[
+                {
+                  id:'BHT', name:'Beginning Of Hierarchical Transaction', repeats:1, required:true,
+                  elements:[
+                    {id:'BHT01', name:'Hierarchical Structure', required:true, validate:hierarchicalStructureCodes},
+                    {id:'BHT02', name:'Transaction Set Purpose', required:true, validate:transactionSetPurposeCodes},
+                    {id:'BHT03', name:'Submitter Transaction Identifier', required:false, validate:null},
+                    {id:'BHT04', name:'Transaction Set Creation Date', required:true, validate:null},
+                    {id:'BHT05', name:'Transaction Set Creation Time', required:true, validate:null},
+                    {id:'BHT06', name:'Transaction Type', required:null, validate:null},
+                  ],
+                  segments:[],
+                },
+                {
+                  id:'HL', name:'2000A_ Information Source Level', repeats:-1, required:true,
+                  elements:[
+                    {id:'HL01', name:'Hierarchical ID Number', required:true, validate:null},
+                    {id:'HL02', name:'Hierarchical Parent ID Number', required:null, validate:null},
+                    {id:'HL03', name:'Hierarchical Level', required:true, validate:hierarchicalLevelCodes},
+                    {id:'HL04', name:'Hierarchical Child', required:true, validate:hierarchicalChildCodes},
+                  ],
+                  segments:[
+                    {
+                      id:'AAA', name:'Request Validation', repeats:9, required:false,
+                      elements:[
+                        {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                        {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                        {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                        {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                      ],
+                    },
+                    {
+                      id:'NM1', name:'2100A_ Information Source Name', repeats:1, required:true,
+                      elements:[
+                        {id:'NM101', name:'Entity Identifier', required:true, validate:entityIdentifierCodes},
+                        {id:'NM102', name:'Entity Type Qualifier', required:true, validate:entityTypeQualifiers},
+                        {id:'NM103', name:'Information Source Last Or Organization Name', required:true, validate:null},
+                        {id:'NM104', name:'Information Source First Name', required:false, validate:null},
+                        {id:'NM105', name:'Information Source Middle Name', required:false, validate:null},
+                        {id:'NM106', name:'Name Prefix', required:null, validate:null},
+                        {id:'NM107', name:'Information Source Name Suffix', required:false, validate:null},
+                        {id:'NM108', name:'Identification Code Qualifier', required:true, validate:identificationCodeQualifiers},
+                        {id:'NM109', name:'Information Source Primary Identifier', required:true, validate:null},
+                        {id:'NM110', name:'Entity Relationship', required:null, validate:null},
+                        {id:'NM111', name:'Entity Identifier', required:null, validate:null},
+                        {id:'NM112', name:'Name Last Or Organization Name', required:null, validate:null},
+                      ],
+                      segments:[
+                        {
+                          id:'PER', name:'Information Source Contact Info', repeats:3, required:false,
+                          elements:[
+                            {id:'PER01', name:'Contact Function', required:true, validate:contactFunctionCodes},
+                            {id:'PER02', name:'Information Source Contact Name', required:false, validate:null},
+                            {id:'PER03', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                            {id:'PER04', name:'Information Source Communication Number', required:false, validate:null},
+                            {id:'PER05', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                            {id:'PER06', name:'Information Source Communication Number', required:false, validate:null},
+                            {id:'PER07', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                            {id:'PER08', name:'Information Source Communication Number', required:false, validate:null},
+                            {id:'PER09', name:'Contact Inquiry Reference', required:null, validate:null},
+                          ],
+                        },
+                        {
+                          id:'AAA', name:'Request Validation', repeats:9, required:false,
+                          elements:[
+                            {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                            {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                            {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                            {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                          ],
+                        },
+                      ],
+                    },
+                    {
+                      id:'HL', name:'2000B_ Information Receiver Level', repeats:-1, required:false,
+                      elements:[
+                        {id:'HL01', name:'Hierarchical ID Number', required:true, validate:null},
+                        {id:'HL02', name:'Hierarchical Parent ID Number', required:true, validate:null},
+                        {id:'HL03', name:'Hierarchical Level', required:true, validate:hierarchicalLevelCodes},
+                        {id:'HL04', name:'Hierarchical Child', required:true, validate:hierarchicalChildCodes},
+                      ],
+                      segments:[
+                        {
+                          id:'NM1', name:'2100B_ Information Receiver Name', repeats:1, required:true,
+                          elements:[
+                            {id:'NM101', name:'Entity Identifier', required:true, validate:entityIdentifierCodes},
+                            {id:'NM102', name:'Entity Type Qualifier', required:true, validate:entityTypeQualifiers},
+                            {id:'NM103', name:'Information Receiver Last Or Organization Name', required:false, validate:null},
+                            {id:'NM104', name:'Information Receiver First Name', required:false, validate:null},
+                            {id:'NM105', name:'Information Receiver Middle Name', required:false, validate:null},
+                            {id:'NM106', name:'Name Prefix', required:null, validate:null},
+                            {id:'NM107', name:'Information Receiver Name Suffix', required:false, validate:null},
+                            {id:'NM108', name:'Identification Code Qualifier', required:true, validate:identificationCodeQualifiers},
+                            {id:'NM109', name:'Information Receiver Identification Number', required:true, validate:null},
+                            {id:'NM110', name:'Entity Relationship', required:null, validate:null},
+                            {id:'NM111', name:'Entity Identifier', required:null, validate:null},
+                            {id:'NM112', name:'Name Last Or Organization Name', required:null, validate:null},
+                          ],
+                          segments:[
+                            {
+                              id:'REF', name:'Information Receiver Additional Identification', repeats:9, required:false,
+                              elements:[
+                                {id:'REF01', name:'Reference Identification Qualifier', required:true, validate:referenceIdentificationQualifiers},
+                                {id:'REF02', name:'Information Receiver Additional Identifier', required:false, validate:null},
+                                {id:'REF03', name:'Information Receiver Additional Identifier State', required:false, validate:null},
+                                {id:'REF04', name:'Reference Identifier', required:null, validate:null},
+                              ],
+                            },
+                            {
+                              id:'N3', name:'Information Receiver Address', repeats:1, required:false,
+                              elements:[
+                                {id:'N301', name:'Information Receiver Address Line', required:true, validate:null},
+                                {id:'N302', name:'Information Receiver Additional Address Line', required:false, validate:null},
+                              ],
+                            },
+                            {
+                              id:'N4', name:'Information Receiver City, State, Zip', repeats:1, required:false,
+                              elements:[
+                                {id:'N401', name:'Information Receiver City Name', required:true, validate:null},
+                                {id:'N402', name:'Information Receiver State', required:false, validate:null},
+                                {id:'N403', name:'Information Receiver Postal Zone Or ZIP', required:false, validate:null},
+                                {id:'N404', name:'Country', required:false, validate:null},
+                                {id:'N405', name:'Location Qualifier', required:false, validate:locationQualifiers},
+                                {id:'N406', name:'Location Identifier', required:false, validate:null},
+                                {id:'N407', name:'Country Subdivision', required:false, validate:null},
+                              ],
+                            },
+                            {
+                              id:'AAA', name:'Information Receiver Request Validation', repeats:9, required:false,
+                              elements:[
+                                {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                                {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                                {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                                {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                              ],
+                            },
+                            {
+                              id:'PRV', name:'Information Receiver Provider Info', repeats:1, required:false,
+                              elements:[
+                                {id:'PRV01', name:'Provider', required:true, validate:providerCodes},
+                                {id:'PRV02', name:'Reference Identification Qualifier', required:false, validate:referenceIdentificationQualifiers},
+                                {id:'PRV03', name:'Information Receiver Provider Taxonomy', required:false, validate:null},
+                                {id:'PRV04', name:'State Or Province', required:null, validate:null},
+                                {id:'PRV05', name:'Provider Specialty Info', required:null, validate:null},
+                                {id:'PRV06', name:'Provider Organization', required:null, validate:null},
+                              ],
+                            },
+                          ],
+                        },
+                        {
+                          id:'HL', name:'2000C_ Subscriber Level', repeats:-1, required:false,
+                          elements:[
+                            {id:'HL01', name:'Hierarchical ID Number', required:true, validate:null},
+                            {id:'HL02', name:'Hierarchical Parent ID Number', required:true, validate:null},
+                            {id:'HL03', name:'Hierarchical Level', required:true, validate:hierarchicalLevelCodes},
+                            {id:'HL04', name:'Hierarchical Child', required:true, validate:hierarchicalChildCodes},
+                          ],
+                          segments:[
+                            {
+                              id:'TRN', name:'Subscriber Trace Number', repeats:3, required:false,
+                              elements:[
+                                {id:'TRN01', name:'Trace Type', required:true, validate:traceTypeCodes},
+                                {id:'TRN02', name:'Trace Number', required:true, validate:null},
+                                {id:'TRN03', name:'Trace Assigning Entity Identifier', required:true, validate:null},
+                                {id:'TRN04', name:'Trace Assigning Entity Additional Identifier', required:false, validate:null},
+                              ],
+                            },
+                            {
+                              id:'NM1', name:'2100C_ Subscriber Name', repeats:1, required:true,
+                              elements:[
+                                {id:'NM101', name:'Entity Identifier', required:true, validate:entityIdentifierCodes},
+                                {id:'NM102', name:'Entity Type Qualifier', required:true, validate:entityTypeQualifiers},
+                                {id:'NM103', name:'Subscriber Last Name', required:false, validate:null},
+                                {id:'NM104', name:'Subscriber First Name', required:false, validate:null},
+                                {id:'NM105', name:'Subscriber Middle Name Or Initial', required:false, validate:null},
+                                {id:'NM106', name:'Name Prefix', required:null, validate:null},
+                                {id:'NM107', name:'Subscriber Name Suffix', required:false, validate:null},
+                                {id:'NM108', name:'Identification Code Qualifier', required:false, validate:identificationCodeQualifiers},
+                                {id:'NM109', name:'Subscriber Primary Identifier', required:false, validate:null},
+                                {id:'NM110', name:'Entity Relationship', required:null, validate:null},
+                                {id:'NM111', name:'Entity Identifier', required:null, validate:null},
+                                {id:'NM112', name:'Name Last Or Organization Name', required:null, validate:null},
+                              ],
+                              segments:[
+                                {
+                                  id:'REF', name:'Subscriber Additional Identification', repeats:9, required:false,
+                                  elements:[
+                                    {id:'REF01', name:'Reference Identification Qualifier', required:true, validate:referenceIdentificationQualifiers},
+                                    {id:'REF02', name:'Subscriber Supplemental Identifier', required:false, validate:null},
+                                    {id:'REF03', name:'Plan Group Or Plan Network Name', required:false, validate:null},
+                                    {id:'REF04', name:'Reference Identifier', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'N3', name:'Subscriber Address', repeats:1, required:false,
+                                  elements:[
+                                    {id:'N301', name:'Subscriber Address Line', required:true, validate:null},
+                                    {id:'N302', name:'Subscriber Address Line', required:false, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'N4', name:'Subscriber City, State, Zip', repeats:1, required:false,
+                                  elements:[
+                                    {id:'N401', name:'Subscriber City Name', required:true, validate:null},
+                                    {id:'N402', name:'Subscriber State', required:false, validate:null},
+                                    {id:'N403', name:'Subscriber Postal Zone Or ZIP', required:false, validate:null},
+                                    {id:'N404', name:'Subscriber Country', required:false, validate:null},
+                                    {id:'N405', name:'Location Qualifier', required:null, validate:locationQualifiers},
+                                    {id:'N406', name:'Location Identifier', required:null, validate:null},
+                                    {id:'N407', name:'Subscriber Country Subdivision', required:false, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'AAA', name:'Subscriber Request Validation', repeats:9, required:false,
+                                  elements:[
+                                    {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                                    {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                                    {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                                    {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                                  ],
+                                },
+                                {
+                                  id:'PRV', name:'Provider Info', repeats:1, required:false,
+                                  elements:[
+                                    {id:'PRV01', name:'Provider', required:true, validate:providerCodes},
+                                    {id:'PRV02', name:'Reference Identification Qualifier', required:false, validate:referenceIdentificationQualifiers},
+                                    {id:'PRV03', name:'Provider Identifier', required:false, validate:null},
+                                    {id:'PRV04', name:'State Or Province', required:null, validate:null},
+                                    {id:'PRV05', name:'Provider Specialty Info', required:null, validate:null},
+                                    {id:'PRV06', name:'Provider Organization', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'DMG', name:'Subscriber Demographic Info', repeats:1, required:false,
+                                  elements:[
+                                    {id:'DMG01', name:'Date Time Period Format Qualifier', required:false, validate:dateTimePeriodFormatQualifiers},
+                                    {id:'DMG02', name:'Subscriber Birth Date', required:false, validate:null},
+                                    {id:'DMG03', name:'Subscriber Gender', required:false, validate:genderCodes},
+                                    {id:'DMG04', name:'Marital Status', required:null, validate:null},
+                                    {id:'DMG05', name:'Composite Race Or Ethnicity Info', required:null, validate:null},
+                                    {id:'DMG06', name:'Citizenship Status', required:null, validate:null},
+                                    {id:'DMG07', name:'Country', required:null, validate:null},
+                                    {id:'DMG08', name:'Basis Of Verification', required:null, validate:null},
+                                    {id:'DMG09', name:'Quantity', required:null, validate:null},
+                                    {id:'DMG10', name:'Code List Qualifier', required:null, validate:null},
+                                    {id:'DMG11', name:'Industry', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'INS', name:'Subscriber Relationship', repeats:1, required:false,
+                                  elements:[
+                                    {id:'INS01', name:'Insured', required:true, validate:yesNoConditionOrResponseCodes},
+                                    {id:'INS02', name:'Individual Relationship', required:true, validate:individualRelationshipCodes},
+                                    {id:'INS03', name:'Maintenance Type', required:false, validate:maintenanceTypeCodes},
+                                    {id:'INS04', name:'Maintenance Reason', required:false, validate:maintenanceReasonCodes},
+                                    {id:'INS05', name:'Benefit Status', required:null, validate:null},
+                                    {id:'INS06', name:'Medicare Status', required:null, validate:null},
+                                    {id:'INS07', name:'Consolidated Omnibus Budget Reconciliation Act (COBRA) Qualifying', required:null, validate:null},
+                                    {id:'INS08', name:'Employment Status', required:null, validate:null},
+                                    {id:'INS09', name:'Student Status', required:null, validate:null},
+                                    {id:'INS10', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'INS11', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'INS12', name:'Date Time Period', required:null, validate:null},
+                                    {id:'INS13', name:'Confidentiality', required:null, validate:null},
+                                    {id:'INS14', name:'City Name', required:null, validate:null},
+                                    {id:'INS15', name:'State Or Province', required:null, validate:null},
+                                    {id:'INS16', name:'Country', required:null, validate:null},
+                                    {id:'INS17', name:'Birth Sequence Number', required:false, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'HI', name:'Subscriber Health Care Diagnosis', repeats:1, required:false,
+                                  elements:[
+                                    {id:'HI01', name:'C022', required:true, validate:null},
+                                    {id:'HI01_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI01_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI01_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI01_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI01_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI01_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI01_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI01_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI01_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI02', name:'C022', required:false, validate:null},
+                                    {id:'HI02_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI02_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI02_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI02_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI02_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI02_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI02_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI02_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI02_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI03', name:'C022', required:false, validate:null},
+                                    {id:'HI03_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI03_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI03_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI03_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI03_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI03_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI03_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI03_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI03_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI04', name:'C022', required:false, validate:null},
+                                    {id:'HI04_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI04_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI04_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI04_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI04_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI04_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI04_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI04_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI04_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI05', name:'C022', required:false, validate:null},
+                                    {id:'HI05_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI05_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI05_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI05_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI05_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI05_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI05_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI05_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI05_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI06', name:'C022', required:false, validate:null},
+                                    {id:'HI06_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI06_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI06_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI06_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI06_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI06_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI06_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI06_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI06_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI07', name:'C022', required:false, validate:null},
+                                    {id:'HI07_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI07_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI07_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI07_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI07_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI07_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI07_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI07_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI07_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI08', name:'C022', required:false, validate:null},
+                                    {id:'HI08_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                    {id:'HI08_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                    {id:'HI08_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                    {id:'HI08_4', name:'Date Time Period', required:null, validate:null},
+                                    {id:'HI08_5', name:'Monetary Amount', required:null, validate:null},
+                                    {id:'HI08_6', name:'Quantity', required:null, validate:null},
+                                    {id:'HI08_7', name:'Version Identifier', required:null, validate:null},
+                                    {id:'HI08_8', name:'Industry', required:null, validate:null},
+                                    {id:'HI08_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                    {id:'HI09', name:'Health Care Code Info', required:null, validate:null},
+                                    {id:'HI10', name:'Health Care Code Info', required:null, validate:null},
+                                    {id:'HI11', name:'Health Care Code Info', required:null, validate:null},
+                                    {id:'HI12', name:'Health Care Code Info', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'DTP', name:'Subscriber Date', repeats:9, required:false,
+                                  elements:[
+                                    {id:'DTP01', name:'Date/Time Qualifier', required:true, validate:dateTimeQualifiers},
+                                    {id:'DTP02', name:'Date Time Period Format Qualifier', required:true, validate:dateTimePeriodFormatQualifiers},
+                                    {id:'DTP03', name:'Date Time Period', required:true, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'MPI', name:'Subscriber Military Personnel Info', repeats:1, required:false,
+                                  elements:[
+                                    {id:'MPI01', name:'Information Status', required:true, validate:informationStatusCodes},
+                                    {id:'MPI02', name:'Employment Status', required:true, validate:employmentStatusCodes},
+                                    {id:'MPI03', name:'Government Service Affiliation', required:true, validate:governmentServiceAffiliationCodes},
+                                    {id:'MPI04', name:'Description', required:false, validate:null},
+                                    {id:'MPI05', name:'Military Service Rank', required:false, validate:militaryServiceRankCodes},
+                                    {id:'MPI06', name:'Date Time Period Format Qualifier', required:false, validate:dateTimePeriodFormatQualifiers},
+                                    {id:'MPI07', name:'Date Time Period', required:false, validate:null},
+                                  ],
+                                },
+                              ],
+                            },
+                            {
+                              id:'EB', name:'2110C_ Subscriber E&B Info', repeats:-1, required:false,
+                              elements:[
+                                {id:'EB01', name:'E&B Info', required:true, validate:eligibilityOrBenefitInformationCodes},
+                                {id:'EB02', name:'Benefit Coverage Level', required:false, validate:coverageLevelCodes},
+                                {id:'EB03', name:'Service Type', required:false, validate:serviceTypeCodes},
+                                {id:'EB04', name:'Insurance Type', required:false, validate:insuranceTypeCodes},
+                                {id:'EB05', name:'Plan Coverage Description', required:false, validate:null},
+                                {id:'EB06', name:'Time Period Qualifier', required:false, validate:timePeriodQualifiers},
+                                {id:'EB07', name:'Benefit Amount', required:false, validate:null},
+                                {id:'EB08', name:'Benefit Percent', required:false, validate:null},
+                                {id:'EB09', name:'Quantity Qualifier', required:false, validate:quantityQualifiers},
+                                {id:'EB10', name:'Benefit Quantity', required:false, validate:null},
+                                {id:'EB11', name:'Authorization', required:false, validate:yesNoConditionOrResponseCodes},
+                                {id:'EB12', name:'In Plan Network', required:false, validate:yesNoConditionOrResponseCodes},
+                                {id:'EB13', name:'C0003', required:false, validate:null},
+                                {id:'EB13_1', name:'Product Or Service ID Qualifier', required:true, validate:productServiceIdQualifier},
+                                {id:'EB13_2', name:'Procedure', required:true, validate:null},
+                                {id:'EB13_3', name:'Procedure Modifier', required:false, validate:null},
+                                {id:'EB13_4', name:'Procedure Modifier', required:false, validate:null},
+                                {id:'EB13_5', name:'Procedure Modifier', required:false, validate:null},
+                                {id:'EB13_6', name:'Procedure Modifier', required:false, validate:null},
+                                {id:'EB13_7', name:'Description', required:null, validate:null},
+                                {id:'EB13_8', name:'Product Or Service ID', required:false, validate:null},
+                                {id:'EB14', name:'C004', required:false, validate:null},
+                                {id:'EB14_1', name:'Diagnosis Code Pointer', required:true, validate:null},
+                                {id:'EB14_2', name:'Diagnosis Code Pointer', required:false, validate:null},
+                                {id:'EB14_3', name:'Diagnosis Code Pointer', required:false, validate:null},
+                                {id:'EB14_4', name:'Diagnosis Code Pointer', required:false, validate:null},
+                              ],
+                              segments:[
+                                {
+                                  id:'HSD', name:'Health Care Services Delivery', repeats:9, required:false,
+                                  elements:[
+                                    {id:'HSD01', name:'Quantity Qualifier', required:false, validate:quantityQualifiers},
+                                    {id:'HSD02', name:'Benefit Quantity', required:false, validate:null},
+                                    {id:'HSD03', name:'Unit Or Basis For Measurement', required:false, validate:unitOrBasisForMeasurementCodes},
+                                    {id:'HSD04', name:'Sample Selection Modulus', required:false, validate:null},
+                                    {id:'HSD05', name:'Time Period Qualifier', required:false, validate:timePeriodQualifiers},
+                                    {id:'HSD06', name:'Period Count', required:false, validate:null},
+                                    {id:'HSD07', name:'Delivery Frequency', required:false, validate:shipDeliveryOrCalendarPatternCodes},
+                                    {id:'HSD08', name:'Delivery Pattern Time', required:false, validate:shipDeliveryPatternTimeCodes},
+                                  ],
+                                },
+                                {
+                                  id:'REF', name:'Subscriber Additional Identification', repeats:9, required:false,
+                                  elements:[
+                                    {id:'REF01', name:'Reference Identification Qualifier', required:true, validate:referenceIdentificationQualifiers},
+                                    {id:'REF02', name:'Subscriber E&B Identifier', required:false, validate:null},
+                                    {id:'REF03', name:'Plan Group Or Plan Network Name', required:false, validate:null},
+                                    {id:'REF04', name:'Reference Identifier', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'DTP', name:'Subscriber Eligibility/Benefit Date', repeats:20, required:false,
+                                  elements:[
+                                    {id:'DTP01', name:'Date/Time Qualifier', required:true, validate:dateTimeQualifiers},
+                                    {id:'DTP02', name:'Date Time Period Format Qualifier', required:true, validate:dateTimePeriodFormatQualifiers},
+                                    {id:'DTP03', name:'E&B Date Time Period', required:true, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'AAA', name:'Subscriber Request Validation', repeats:9, required:false,
+                                  elements:[
+                                    {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                                    {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                                    {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                                    {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                                  ],
+                                },
+                                {
+                                  id:'MSG', name:'Message Text', repeats:10, required:false,
+                                  elements:[
+                                    {id:'MSG01', name:'Text', required:true, validate:null},
+                                    {id:'MSG02', name:'Printer Carriage Control', required:null, validate:null},
+                                    {id:'MSG03', name:'Number', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'III', name:'2115C_ Subscriber E&B Additional Info', repeats:10, required:false,
+                                  elements:[
+                                    {id:'III01', name:'Code List Qualifier', required:false, validate:codeListQualifierCodes},
+                                    {id:'III02', name:'Industry', required:false, validate:industryCodes},
+                                    {id:'III03', name:'Code Category', required:false, validate:codeCategories},
+                                    {id:'III04', name:'Injured Body Part Name', required:false, validate:null},
+                                    {id:'III05', name:'Quantity', required:null, validate:null},
+                                    {id:'III06', name:'Composite Unit Of Measure', required:null, validate:null},
+                                    {id:'III07', name:'Surface/Layer/Position', required:null, validate:null},
+                                    {id:'III08', name:'Surface/Layer/Position', required:null, validate:null},
+                                    {id:'III09', name:'Surface/Layer/Position', required:null, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'LS', name:'Loop Header', repeats:1, required:false,
+                                  elements:[
+                                    {id:'LS01', name:'Loop Identifier', required:true, validate:null},
+                                  ],
+                                  segments:[
+                                    {
+                                      id:'NM1', name:'2120C_ Subscriber Benefit Related Entity Name', repeats:23, required:true,
+                                      elements:[
+                                        {id:'NM101', name:'Entity Identifier', required:true, validate:entityIdentifierCodes},
+                                        {id:'NM102', name:'Entity Type Qualifier', required:true, validate:entityTypeQualifiers},
+                                        {id:'NM103', name:'Benefit Related Entity Last Or Organization Name', required:false, validate:null},
+                                        {id:'NM104', name:'Benefit Related Entity First Name', required:false, validate:null},
+                                        {id:'NM105', name:'Benefit Related Entity Middle Name', required:false, validate:null},
+                                        {id:'NM106', name:'Name Prefix', required:null, validate:null},
+                                        {id:'NM107', name:'Benefit Related Entity Name Suffix', required:false, validate:null},
+                                        {id:'NM108', name:'Identification Code Qualifier', required:false, validate:identificationCodeQualifiers},
+                                        {id:'NM109', name:'Benefit Related Identity Identifier', required:false, validate:null},
+                                        {id:'NM110', name:'Benefit Related Entity Relationship', required:false, validate:entityRelationshipCodes},
+                                        {id:'NM111', name:'Entity Identifier', required:null, validate:null},
+                                        {id:'NM112', name:'Name Last Or Organization Name', required:null, validate:null},
+                                      ],
+                                      segments:[
+                                        {
+                                          id:'N3', name:'Subscriber Benefit Related Entity Address', repeats:1, required:false,
+                                          elements:[
+                                            {id:'N301', name:'Benefit Related Entity Address Line', required:true, validate:null},
+                                            {id:'N302', name:'Benefit Related Entity Address Line', required:false, validate:null},
+                                          ],
+                                        },
+                                        {
+                                          id:'N4', name:'Subscriber Benefit Related Entity City, State, Zip', repeats:1, required:false,
+                                          elements:[
+                                            {id:'N401', name:'Benefit Related Entity City Name', required:true, validate:null},
+                                            {id:'N402', name:'Benefit Related Entity State', required:false, validate:null},
+                                            {id:'N403', name:'Benefit Related Entity Postal Zone Or ZIP', required:false, validate:null},
+                                            {id:'N404', name:'Benefit Related Entity Country', required:false, validate:null},
+                                            {id:'N405', name:'Benefit Related Entity Location Qualifier', required:false, validate:locationQualifiers},
+                                            {id:'N406', name:'Benefit Related Entity DOD Health Service Region', required:false, validate:null},
+                                            {id:'N407', name:'Benefit Related Entity Country Subdivision', required:false, validate:null},
+                                          ],
+                                        },
+                                        {
+                                          id:'PER', name:'Subscriber Benefit Related Entity Contact Info', repeats:3, required:false,
+                                          elements:[
+                                            {id:'PER01', name:'Contact Function', required:true, validate:contactFunctionCodes},
+                                            {id:'PER02', name:'Benefit Related Entity Contact Name', required:false, validate:null},
+                                            {id:'PER03', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                                            {id:'PER04', name:'Benefit Related Entity Communication Number', required:false, validate:null},
+                                            {id:'PER05', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                                            {id:'PER06', name:'Benefit Related Entity Communication Number', required:false, validate:null},
+                                            {id:'PER07', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                                            {id:'PER08', name:'Benefit Related Entity Communication Number', required:false, validate:null},
+                                            {id:'PER09', name:'Contact Inquiry Reference', required:null, validate:null},
+                                          ],
+                                        },
+                                        {
+                                          id:'PRV', name:'Subscriber Benefit Related Provider Info', repeats:1, required:false,
+                                          elements:[
+                                            {id:'PRV01', name:'Provider', required:true, validate:providerCodes},
+                                            {id:'PRV02', name:'Reference Identification Qualifier', required:false, validate:referenceIdentificationQualifiers},
+                                            {id:'PRV03', name:'Benefit Related Entity Provider Taxonomy', required:false, validate:null},
+                                            {id:'PRV04', name:'State Or Province', required:null, validate:null},
+                                            {id:'PRV05', name:'Provider Specialty Info', required:null, validate:null},
+                                            {id:'PRV06', name:'Provider Organization', required:null, validate:null},
+                                          ],
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                                {
+                                  id:'LE', name:'Loop Trailer', repeats:1, required:false,
+                                  elements:[
+                                    {id:'LE01', name:'Loop Identifier', required:true, validate:null},
+                                  ],
+                                },
+                              ],
+                            },
+                            {
+                              id:'HL', name:'2000D_ Dependent Level', repeats:-1, required:false,
+                              elements:[
+                                {id:'HL01', name:'Hierarchical ID Number', required:true, validate:null},
+                                {id:'HL02', name:'Hierarchical Parent ID Number', required:true, validate:null},
+                                {id:'HL03', name:'Hierarchical Level', required:true, validate:hierarchicalLevelCodes},
+                                {id:'HL04', name:'Hierarchical Child', required:true, validate:hierarchicalChildCodes},
+                              ],
+                              segments:[
+                                {
+                                  id:'TRN', name:'Dependent Trace Number', repeats:3, required:false,
+                                  elements:[
+                                    {id:'TRN01', name:'Trace Type', required:true, validate:traceTypeCodes},
+                                    {id:'TRN02', name:'Trace Number', required:true, validate:null},
+                                    {id:'TRN03', name:'Trace Assigning Entity Identifier', required:true, validate:null},
+                                    {id:'TRN04', name:'Trace Assigning Entity Additional Identifier', required:false, validate:null},
+                                  ],
+                                },
+                                {
+                                  id:'NM1', name:'2100D_ Dependent Name', repeats:1, required:true,
+                                  elements:[
+                                    {id:'NM101', name:'Entity Identifier', required:true, validate:entityIdentifierCodes},
+                                    {id:'NM102', name:'Entity Type Qualifier', required:true, validate:entityTypeQualifiers},
+                                    {id:'NM103', name:'Dependent Last Name', required:false, validate:null},
+                                    {id:'NM104', name:'Dependent First Name', required:false, validate:null},
+                                    {id:'NM105', name:'Dependent Middle Name', required:false, validate:null},
+                                    {id:'NM106', name:'Name Prefix', required:null, validate:null},
+                                    {id:'NM107', name:'Dependent Name Suffix', required:false, validate:null},
+                                    {id:'NM108', name:'Identification Code Qualifier', required:null, validate:null},
+                                    {id:'NM109', name:'Identification', required:null, validate:null},
+                                    {id:'NM110', name:'Entity Relationship', required:null, validate:null},
+                                    {id:'NM111', name:'Entity Identifier', required:null, validate:null},
+                                    {id:'NM112', name:'Name Last Or Organization Name', required:null, validate:null},
+                                  ],
+                                  segments:[
+                                    {
+                                      id:'REF', name:'Dependent Additional Identification', repeats:9, required:false,
+                                      elements:[
+                                        {id:'REF01', name:'Reference Identification Qualifier', required:true, validate:referenceIdentificationQualifiers},
+                                        {id:'REF02', name:'Dependent Supplemental Identifier', required:false, validate:null},
+                                        {id:'REF03', name:'Plan Group Or Plan Network Name', required:false, validate:null},
+                                        {id:'REF04', name:'Reference Identifier', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'N3', name:'Dependent Address', repeats:1, required:false,
+                                      elements:[
+                                        {id:'N301', name:'Dependent Address Line', required:true, validate:null},
+                                        {id:'N302', name:'Dependent Address Line', required:false, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'N4', name:'Dependent City, State, Zip', repeats:1, required:false,
+                                      elements:[
+                                        {id:'N401', name:'Dependent City Name', required:true, validate:null},
+                                        {id:'N402', name:'Dependent State', required:false, validate:null},
+                                        {id:'N403', name:'Dependent Postal Zone Or ZIP', required:false, validate:null},
+                                        {id:'N404', name:'Dependent Country', required:false, validate:null},
+                                        {id:'N405', name:'Location Qualifier', required:null, validate:locationQualifiers},
+                                        {id:'N406', name:'Location Identifier', required:null, validate:null},
+                                        {id:'N407', name:'Dependent Country Subdivision', required:false, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'AAA', name:'Dependent Request Validation', repeats:9, required:false,
+                                      elements:[
+                                        {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                                        {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                                        {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                                        {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                                      ],
+                                    },
+                                    {
+                                      id:'PRV', name:'Provider Info', repeats:1, required:false,
+                                      elements:[
+                                        {id:'PRV01', name:'Provider', required:true, validate:providerCodes},
+                                        {id:'PRV02', name:'Reference Identification Qualifier', required:false, validate:referenceIdentificationQualifiers},
+                                        {id:'PRV03', name:'Provider Identifier', required:false, validate:null},
+                                        {id:'PRV04', name:'State Or Province', required:null, validate:null},
+                                        {id:'PRV05', name:'Provider Specialty Info', required:null, validate:null},
+                                        {id:'PRV06', name:'Provider Organization', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'DMG', name:'Dependent Demographic Info', repeats:1, required:false,
+                                      elements:[
+                                        {id:'DMG01', name:'Date Time Period Format Qualifier', required:false, validate:dateTimePeriodFormatQualifiers},
+                                        {id:'DMG02', name:'Dependent Birth Date', required:false, validate:null},
+                                        {id:'DMG03', name:'Dependent Gender', required:false, validate:genderCodes},
+                                        {id:'DMG04', name:'Marital Status', required:null, validate:null},
+                                        {id:'DMG05', name:'Composite Race Or Ethnicity Info', required:null, validate:null},
+                                        {id:'DMG06', name:'Citizenship Status', required:null, validate:null},
+                                        {id:'DMG07', name:'Country', required:null, validate:null},
+                                        {id:'DMG08', name:'Basis Of Verification', required:null, validate:null},
+                                        {id:'DMG09', name:'Quantity', required:null, validate:null},
+                                        {id:'DMG10', name:'Code List Qualifier', required:null, validate:null},
+                                        {id:'DMG11', name:'Industry', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'INS', name:'Dependent Relationship', repeats:1, required:false,
+                                      elements:[
+                                        {id:'INS01', name:'Insured', required:true, validate:yesNoConditionOrResponseCodes},
+                                        {id:'INS02', name:'Individual Relationship', required:true, validate:individualRelationshipCodes},
+                                        {id:'INS03', name:'Maintenance Type', required:false, validate:maintenanceTypeCodes},
+                                        {id:'INS04', name:'Maintenance Reason', required:false, validate:maintenanceReasonCodes},
+                                        {id:'INS05', name:'Benefit Status', required:null, validate:null},
+                                        {id:'INS06', name:'Medicare Status', required:null, validate:null},
+                                        {id:'INS07', name:'Consolidated Omnibus Budget Reconciliation Act (COBRA) Qualifying', required:null, validate:null},
+                                        {id:'INS08', name:'Employment Status', required:null, validate:null},
+                                        {id:'INS09', name:'Student Status', required:null, validate:null},
+                                        {id:'INS10', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'INS11', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'INS12', name:'Date Time Period', required:null, validate:null},
+                                        {id:'INS13', name:'Confidentiality', required:null, validate:null},
+                                        {id:'INS14', name:'City Name', required:null, validate:null},
+                                        {id:'INS15', name:'State Or Province', required:null, validate:null},
+                                        {id:'INS16', name:'Country', required:null, validate:null},
+                                        {id:'INS17', name:'Birth Sequence Number', required:false, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'HI', name:'Dependent Health Care Diagnosis', repeats:1, required:false,
+                                      elements:[
+                                        {id:'HI01', name:'C022', required:true, validate:null},
+                                        {id:'HI01_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI01_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI01_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI01_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI01_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI01_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI01_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI01_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI01_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI02', name:'C022', required:false, validate:null},
+                                        {id:'HI02_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI02_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI02_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI02_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI02_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI02_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI02_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI02_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI02_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI03', name:'C022', required:false, validate:null},
+                                        {id:'HI03_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI03_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI03_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI03_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI03_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI03_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI03_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI03_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI03_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI04', name:'C022', required:false, validate:null},
+                                        {id:'HI04_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI04_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI04_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI04_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI04_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI04_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI04_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI04_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI04_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI05', name:'C022', required:false, validate:null},
+                                        {id:'HI05_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI05_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI05_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI05_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI05_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI05_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI05_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI05_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI05_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI06', name:'C022', required:false, validate:null},
+                                        {id:'HI06_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI06_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI06_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI06_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI06_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI06_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI06_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI06_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI06_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI07', name:'C022', required:false, validate:null},
+                                        {id:'HI07_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI07_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI07_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI07_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI07_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI07_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI07_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI07_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI07_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI08', name:'C022', required:false, validate:null},
+                                        {id:'HI08_1', name:'Diagnosis Type', required:true, validate:codeListQualifierCodes},
+                                        {id:'HI08_2', name:'Diagnosis', required:true, validate:industryCodes},
+                                        {id:'HI08_3', name:'Date Time Period Format Qualifier', required:null, validate:null},
+                                        {id:'HI08_4', name:'Date Time Period', required:null, validate:null},
+                                        {id:'HI08_5', name:'Monetary Amount', required:null, validate:null},
+                                        {id:'HI08_6', name:'Quantity', required:null, validate:null},
+                                        {id:'HI08_7', name:'Version Identifier', required:null, validate:null},
+                                        {id:'HI08_8', name:'Industry', required:null, validate:null},
+                                        {id:'HI08_9', name:'Yes/No Condition Or Response', required:null, validate:null},
+                                        {id:'HI09', name:'Health Care Code Info', required:null, validate:null},
+                                        {id:'HI10', name:'Health Care Code Info', required:null, validate:null},
+                                        {id:'HI11', name:'Health Care Code Info', required:null, validate:null},
+                                        {id:'HI12', name:'Health Care Code Info', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'DTP', name:'Dependent Date', repeats:9, required:false,
+                                      elements:[
+                                        {id:'DTP01', name:'Date/Time Qualifier', required:true, validate:dateTimeQualifiers},
+                                        {id:'DTP02', name:'Date Time Period Format Qualifier', required:true, validate:dateTimePeriodFormatQualifiers},
+                                        {id:'DTP03', name:'Date Time Period', required:true, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'MPI', name:'Dependent Military Personnel Info', repeats:1, required:false,
+                                      elements:[
+                                        {id:'MPI01', name:'Information Status', required:true, validate:informationStatusCodes},
+                                        {id:'MPI02', name:'Employment Status', required:true, validate:employmentStatusCodes},
+                                        {id:'MPI03', name:'Government Service Affiliation', required:true, validate:governmentServiceAffiliationCodes},
+                                        {id:'MPI04', name:'Description', required:false, validate:null},
+                                        {id:'MPI05', name:'Military Service Rank', required:false, validate:militaryServiceRankCodes},
+                                        {id:'MPI06', name:'Date Time Period Format Qualifier', required:false, validate:dateTimePeriodFormatQualifiers},
+                                        {id:'MPI07', name:'Date Time Period', required:false, validate:null},
+                                      ],
+                                    },
+                                  ],
+                                },
+                                {
+                                  id:'EB', name:'2110D_ Dependent E&B Info', repeats:-1, required:false,
+                                  elements:[
+                                    {id:'EB01', name:'E&B Info', required:true, validate:eligibilityOrBenefitInformationCodes},
+                                    {id:'EB02', name:'Benefit Coverage Level', required:false, validate:coverageLevelCodes},
+                                    {id:'EB03', name:'Service Type', required:false, validate:serviceTypeCodes},
+                                    {id:'EB04', name:'Insurance Type', required:false, validate:insuranceTypeCodes},
+                                    {id:'EB05', name:'Plan Coverage Description', required:false, validate:null},
+                                    {id:'EB06', name:'Time Period Qualifier', required:false, validate:timePeriodQualifiers},
+                                    {id:'EB07', name:'Benefit Amount', required:false, validate:null},
+                                    {id:'EB08', name:'Benefit Percent', required:false, validate:null},
+                                    {id:'EB09', name:'Quantity Qualifier', required:false, validate:quantityQualifiers},
+                                    {id:'EB10', name:'Benefit Quantity', required:false, validate:null},
+                                    {id:'EB11', name:'Authorization', required:false, validate:yesNoConditionOrResponseCodes},
+                                    {id:'EB12', name:'In Plan Network', required:false, validate:yesNoConditionOrResponseCodes},
+                                    {id:'EB13', name:'C0003', required:false, validate:null},
+                                    {id:'EB13_1', name:'Product Or Service ID Qualifier', required:true, validate:productServiceIdQualifier},
+                                    {id:'EB13_2', name:'Procedure', required:true, validate:null},
+                                    {id:'EB13_3', name:'Procedure Modifier', required:false, validate:null},
+                                    {id:'EB13_4', name:'Procedure Modifier', required:false, validate:null},
+                                    {id:'EB13_5', name:'Procedure Modifier', required:false, validate:null},
+                                    {id:'EB13_6', name:'Procedure Modifier', required:false, validate:null},
+                                    {id:'EB13_7', name:'Description', required:null, validate:null},
+                                    {id:'EB13_8', name:'Product Or Service ID', required:false, validate:null},
+                                    {id:'EB14', name:'C004', required:false, validate:null},
+                                    {id:'EB14_1', name:'Diagnosis Code Pointer', required:true, validate:null},
+                                    {id:'EB14_2', name:'Diagnosis Code Pointer', required:false, validate:null},
+                                    {id:'EB14_3', name:'Diagnosis Code Pointer', required:false, validate:null},
+                                    {id:'EB14_4', name:'Diagnosis Code Pointer', required:false, validate:null},
+                                  ],
+                                  segments:[
+                                    {
+                                      id:'HSD', name:'Health Care Services Delivery', repeats:9, required:false,
+                                      elements:[
+                                        {id:'HSD01', name:'Quantity Qualifier', required:false, validate:quantityQualifiers},
+                                        {id:'HSD02', name:'Benefit Quantity', required:false, validate:null},
+                                        {id:'HSD03', name:'Unit Or Basis For Measurement', required:false, validate:unitOrBasisForMeasurementCodes},
+                                        {id:'HSD04', name:'Sample Selection Modulus', required:false, validate:null},
+                                        {id:'HSD05', name:'Time Period Qualifier', required:false, validate:timePeriodQualifiers},
+                                        {id:'HSD06', name:'Period Count', required:false, validate:null},
+                                        {id:'HSD07', name:'Delivery Frequency', required:false, validate:shipDeliveryOrCalendarPatternCodes},
+                                        {id:'HSD08', name:'Delivery Pattern Time', required:false, validate:shipDeliveryPatternTimeCodes},
+                                      ],
+                                    },
+                                    {
+                                      id:'REF', name:'Dependent Additional Identification', repeats:9, required:false,
+                                      elements:[
+                                        {id:'REF01', name:'Reference Identification Qualifier', required:true, validate:referenceIdentificationQualifiers},
+                                        {id:'REF02', name:'Dependent E&B Identifier', required:true, validate:null},
+                                        {id:'REF03', name:'Plan Group Or Plan Network Name', required:false, validate:null},
+                                        {id:'REF04', name:'Reference Identifier', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'DTP', name:'Dependent Eligibility/Benefit Date', repeats:20, required:false,
+                                      elements:[
+                                        {id:'DTP01', name:'Date/Time Qualifier', required:true, validate:dateTimeQualifiers},
+                                        {id:'DTP02', name:'Date Time Period Format Qualifier', required:true, validate:dateTimePeriodFormatQualifiers},
+                                        {id:'DTP03', name:'E&B Date Time Period', required:true, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'AAA', name:'Dependent Request Validation', repeats:9, required:false,
+                                      elements:[
+                                        {id:'AAA01', name:'Valid Request', required:true, validate:yesNoConditionOrResponseCodes},
+                                        {id:'AAA02', name:'Agency Qualifier', required:null, validate:null},
+                                        {id:'AAA03', name:'Reject Reason', required:true, validate:rejectReasonCodes},
+                                        {id:'AAA04', name:'Follow-up Action', required:true, validate:followUpActionCodes},
+                                      ],
+                                    },
+                                    {
+                                      id:'MSG', name:'Message Text', repeats:10, required:false,
+                                      elements:[
+                                        {id:'MSG01', name:'Text', required:true, validate:null},
+                                        {id:'MSG02', name:'Printer Carriage Control', required:null, validate:null},
+                                        {id:'MSG03', name:'Number', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'III', name:'2115D_ Dependent E&B Additional Info', repeats:10, required:false,
+                                      elements:[
+                                        {id:'III01', name:'Code List Qualifier', required:false, validate:codeListQualifierCodes},
+                                        {id:'III02', name:'Industry', required:false, validate:industryCodes},
+                                        {id:'III03', name:'Code Category', required:false, validate:codeCategories},
+                                        {id:'III04', name:'Injured Body Part Name', required:false, validate:null},
+                                        {id:'III05', name:'Quantity', required:null, validate:null},
+                                        {id:'III06', name:'Composite Unit Of Measure', required:null, validate:null},
+                                        {id:'III07', name:'Surface/Layer/Position', required:null, validate:null},
+                                        {id:'III08', name:'Surface/Layer/Position', required:null, validate:null},
+                                        {id:'III09', name:'Surface/Layer/Position', required:null, validate:null},
+                                      ],
+                                    },
+                                    {
+                                      id:'LS', name:'Loop Header', repeats:1, required:false,
+                                      elements:[
+                                        {id:'LS01', name:'Loop Identifier', required:true, validate:null},
+                                      ],
+                                      segments:[
+                                        {
+                                          id:'NM1', name:'2120D_ Dependent Benefit Related Entity Name', repeats:23, required:true,
+                                          elements:[
+                                            {id:'NM101', name:'Entity Identifier', required:true, validate:entityIdentifierCodes},
+                                            {id:'NM102', name:'Entity Type Qualifier', required:true, validate:entityTypeQualifiers},
+                                            {id:'NM103', name:'Benefit Related Entity Last Or Organization Name', required:false, validate:null},
+                                            {id:'NM104', name:'Benefit Related Entity First Name', required:false, validate:null},
+                                            {id:'NM105', name:'Benefit Related Entity Middle Name', required:false, validate:null},
+                                            {id:'NM106', name:'Name Prefix', required:null, validate:null},
+                                            {id:'NM107', name:'Benefit Related Entity Name Suffix', required:false, validate:null},
+                                            {id:'NM108', name:'Identification Code Qualifier', required:false, validate:null},
+                                            {id:'NM109', name:'Benefit Related Entity Identifier', required:false, validate:null},
+                                            {id:'NM110', name:'Benefit Related Entity Relationship', required:false, validate:entityRelationshipCodes},
+                                            {id:'NM111', name:'Entity Identifier', required:null, validate:null},
+                                            {id:'NM112', name:'Name Last Or Organization Name', required:null, validate:null},
+                                          ],
+                                          segments:[
+                                            {
+                                              id:'N3', name:'Dependent Benefit Related Entity Address', repeats:1, required:false,
+                                              elements:[
+                                                {id:'N301', name:'Benefit Related Entity Address Line', required:true, validate:null},
+                                                {id:'N302', name:'Benefit Related Entity Address Line', required:false, validate:null},
+                                              ],
+                                            },
+                                            {
+                                              id:'N4', name:'Dependent Benefit Related Entity City, State, Zip', repeats:1, required:false,
+                                              elements:[
+                                                {id:'N401', name:'Benefit Related Entity City Name', required:true, validate:null},
+                                                {id:'N402', name:'Benefit Related Entity State', required:false, validate:null},
+                                                {id:'N403', name:'Benefit Related Entity Postal Zone Or ZIP', required:false, validate:null},
+                                                {id:'N404', name:'Benefit Related Entity Country', required:false, validate:null},
+                                                {id:'N405', name:'Benefit Related Entity Location Qualifier', required:false, validate:locationQualifiers},
+                                                {id:'N406', name:'Benefit Related Entity DOD Health Service Region', required:false, validate:null},
+                                                {id:'N407', name:'Benefit Related Entity Country Subdivision', required:false, validate:null},
+                                              ],
+                                            },
+                                            {
+                                              id:'PER', name:'Dependent Benefit Related Entity Contact Info', repeats:3, required:false,
+                                              elements:[
+                                                {id:'PER01', name:'Contact Function', required:true, validate:contactFunctionCodes},
+                                                {id:'PER02', name:'Benefit Related Entity Contact Name', required:false, validate:null},
+                                                {id:'PER03', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                                                {id:'PER04', name:'Benefit Related Entity Communication Number', required:false, validate:null},
+                                                {id:'PER05', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                                                {id:'PER06', name:'Benefit Related Entity Communication Number', required:false, validate:null},
+                                                {id:'PER07', name:'Communication Number Qualifier', required:false, validate:communicationNumberQualifier},
+                                                {id:'PER08', name:'Benefit Related Entity Communication Number', required:false, validate:null},
+                                                {id:'PER09', name:'Contact Inquiry Reference', required:null, validate:null},
+                                              ],
+                                            },
+                                            {
+                                              id:'PRV', name:'Dependent Benefit Related Provider Info', repeats:1, required:false,
+                                              elements:[
+                                                {id:'PRV01', name:'Provider', required:true, validate:providerCodes},
+                                                {id:'PRV02', name:'Reference Identification Qualifier', required:false, validate:referenceIdentificationQualifiers},
+                                                {id:'PRV03', name:'Benefit Related Entity Provider Taxonomy', required:false, validate:null},
+                                                {id:'PRV04', name:'State Or Province', required:null, validate:null},
+                                                {id:'PRV05', name:'Provider Specialty Info', required:null, validate:null},
+                                                {id:'PRV06', name:'Provider Organization', required:null, validate:null},
+                                              ],
+                                            },
+                                          ],
+                                        },
+                                      ],
+                                    },
+                                    {
+                                      id:'LE', name:'Loop Trailer', repeats:1, required:false,
+                                      elements:[
+                                        {id:'LE01', name:'Loop Identifier', required:true, validate:null},
+                                      ],
+                                    },
+                                  ],
+                                },
+                              ],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+</script>
